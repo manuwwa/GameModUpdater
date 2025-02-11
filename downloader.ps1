@@ -12,7 +12,6 @@ Copyleft - https://www.gnu.org/licenses/copyleft.html
 manuwwa
 GitHub: https://github.com/manuwwa
 #>
-
 #configuration
 $baseUrl = "https://feudalxxl.eu"
 
@@ -71,6 +70,34 @@ function Isnew-Version {
     }
 }
 
+function Write-DonloadProgress {
+    param (
+        [int[]]$downloadTimes,
+        [int]$totalFiles
+    )
+
+    $averageDownloadTime = ($downloadTimes | Measure-Object -Average).Average
+    $remainingFiles = $totalFiles - $downloadTimes.Count
+    $estimatedTimeRemaining = $remainingFiles * $averageDownloadTime
+
+    $percentComplete = ($downloadTimes.Count / $totalFiles) * 100
+
+    Write-Progress -Activity "Downloading files" -Status "Processing file $($downloadTimes.Count) of $totalFiles" -PercentComplete $percentComplete -SecondsRemaining $estimatedTimeRemaining
+}
+
+function Download-File {
+    param (
+        [string]$downloadLink,
+        [string]$downloadDestination
+    )
+    $startTime = Get-Date
+    Invoke-WebRequest -Uri $downloadLink -OutFile $downloadDestination | Out-Null
+    write-host "Finishing $downloadLink"
+    $endTime = Get-Date
+    $downloadTime = ($endTime - $startTime).TotalSeconds
+    return $downloadTime
+}
+
 #endregion Functions
 
 Write-Host @'
@@ -114,33 +141,41 @@ if ($isNewVersion) {
 
     $totalFiles = $files.Count
     $downloadTimes = @()
-
-    for ($i = 0; $i -lt $totalFiles; $i++) 
+    $maxJobs = 10
+    $jobs = @()
+    $i= 0
+    foreach ($file in $files) 
     {
-        $startTime = Get-Date
-        $file = $files[$i]
+        $i++
         $filePath = $file.filePath
         $downloadLink = Join-Url $baseUrl $filePath
         $donloadDestination = Join-Path $scriptDirectory ($filePath -replace "updatefiles[\\\/]", "")
         $folderPath = Split-Path -Path $donloadDestination -Parent
-        Ensure-FolderExists $folderPath  
-        Invoke-WebRequest -Uri $downloadLink -OutFile $donloadDestination | Out-Null
+        Ensure-FolderExists $folderPath
+        write-host "starting job $i $downloadLink"
+        # Start a new job
+        $jobs += Start-Job -Name "downloader $i" -ScriptBlock {
+            param ($downloadLink, $downloadDestination)
+            Download-File -downloadLink $downloadLink -downloadDestination $downloadDestination
+        } -ArgumentList $downloadLink, $downloadDestination
 
-        # Create a progress bar
-        $endTime = Get-Date
-
-        $downloadTime = ($endTime - $startTime).TotalSeconds
-        $downloadTimes += $downloadTime
-
-        $averageDownloadTime = ($downloadTimes | Measure-Object -Average).Average
-        $remainingFiles = $totalFiles - ($i + 1)
-        $estimatedTimeRemaining = $remainingFiles * $averageDownloadTime
-
-        $percentComplete = (($i + 1) / $totalFiles) * 100
-
-        Write-Progress -Activity "Downloading files" -Status "Processing file $($i + 1) of $totalFiles" -PercentComplete $percentComplete -SecondsRemaining $estimatedTimeRemaining
-        # End progress bar
+        # If we have reached the max number of jobs, wait for any job to complete
+        while ($jobs.Count -ge $maxJobs) {
+            $completedJob = Wait-Job -Any -Job $jobs
+            $downloadTimes += Receive-Job -Job $completedJob
+            Write-DonloadProgress $downloadTimes $totalFiles
+            Remove-Job -Job $completedJob
+            $jobs = $jobs | Where-Object { $_.Id -ne $completedJob.Id }
+        }
     }
+
+        # Wait for all remaining jobs to complete
+        $jobs | ForEach-Object {
+            $completedJob = Wait-Job -Job $_
+            $downloadTimes += Receive-Job -Job $completedJob
+            Write-DonloadProgress $downloadTimes $totalFiles
+            Remove-Job -Job $completedJob
+        }
     save-versionFile $curentVersion "$scriptDirectory\version.json"
 }
 else {

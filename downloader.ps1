@@ -12,12 +12,11 @@ Copyleft - https://www.gnu.org/licenses/copyleft.html
 manuwwa
 GitHub: https://github.com/manuwwa
 #>
-
 #configuration
 $baseUrl = "https://feudalxxl.eu"
+$maxJobs = 5
 
 # end of configuration
-
 
 #region Functions
 
@@ -35,7 +34,7 @@ function Ensure-FolderExists {
     )
     
     if (-Not (Test-Path -Path $folderPath -PathType Container)) {
-        New-Item -Path $folderPath -ItemType Directory -Force
+        New-Item -Path $folderPath -ItemType Directory -Force | Out-Null
     }
 }
 
@@ -114,43 +113,88 @@ if ($isNewVersion) {
 
     $totalFiles = $files.Count
     $downloadTimes = @()
-
-    for ($i = 0; $i -lt $totalFiles; $i++) 
-    {
-        $startTime = Get-Date
-        $file = $files[$i]
+    
+    [System.Collections.Generic.List[string]]$urls = [System.Collections.Generic.List[string]]::new()
+    [System.Collections.Generic.List[string]]$destinations = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in $files) {
         $filePath = $file.filePath
         $downloadLink = Join-Url $baseUrl $filePath
-        $donloadDestination = Join-Path $scriptDirectory ($filePath -replace "updatefiles[\\\/]", "")
-        $folderPath = Split-Path -Path $donloadDestination -Parent
-        Ensure-FolderExists $folderPath  
-        Invoke-WebRequest -Uri $downloadLink -OutFile $donloadDestination | Out-Null
+        $downloadDestination = Join-Path $scriptDirectory ($filePath -replace "updatefiles[\\\/]", "")
+        $folderPath = Split-Path -Path $downloadDestination -Parent
+        Ensure-FolderExists $folderPath
 
-        # Create a progress bar
-        $endTime = Get-Date
-
-        $downloadTime = ($endTime - $startTime).TotalSeconds
-        $downloadTimes += $downloadTime
-
-        $averageDownloadTime = ($downloadTimes | Measure-Object -Average).Average
-        $remainingFiles = $totalFiles - ($i + 1)
-        $estimatedTimeRemaining = $remainingFiles * $averageDownloadTime
-
-        $percentComplete = (($i + 1) / $totalFiles) * 100
-
-        Write-Progress -Activity "Downloading files" -Status "Processing file $($i + 1) of $totalFiles" -PercentComplete $percentComplete -SecondsRemaining $estimatedTimeRemaining
-        # End progress bar
+        $urls.Add($downloadLink)
+        $destinations.Add($downloadDestination)
     }
+
+    $downloadJob = Start-Job -ScriptBlock {
+        param([System.Collections.Generic.List[string]]$urls, [System.Collections.Generic.List[string]]$destinations, $maxJobs)
+        Add-Type -TypeDefinition @"
+        using System;
+        using System.Collections.Generic;
+        using System.Net;
+        using System.Threading.Tasks;
+
+        public class Downloader
+        {
+            public static void DownloadFiles(List<string> urls, List<string> destinations, int maxDegreeOfParallelism)
+            {
+                try
+                {
+                    Parallel.ForEach(urls, new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism }, (url, state, index) =>
+                    {
+                        using (WebClient client = new WebClient())
+                        {
+                            client.DownloadFile(url, destinations[(int)index]);
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("An error occurred: " + ex.Message);
+                    throw;
+                }
+            }
+        }
+"@
+    [Downloader]::DownloadFiles($urls, $destinations, $maxJobs)
+    } -ArgumentList $urls, $destinations, $maxJobs
+
+    write-host "Downloading files. It could take up to 30 minutes!"
+    write-host "Meanwhile, visit our site: https://feudalxxl.eu"
+    write-host ""
+
+    $s=' '*80+"Please wait!"+' '*80;
+    while ($downloadJob.State -eq 'Running')
+    {write-host($s.Substring(($i=++$i%($s.length-80)),80)+"`r")-N -F R -B 0;sleep -m 99}
+
+    Receive-Job $downloadJob
+    Remove-Job $downloadJob
+
     save-versionFile $curentVersion "$scriptDirectory\version.json"
 }
 else {
     write-host "Game is up to date"
 }
-
+write-host ""
+write-host "Victory will be ours!"
+write-host @"
+  |
+  |
+  + \
+  \\.G_.*=.
+   `(#'/.\|
+    .>' (_--.
+ _=/d   ,^\
+~~ \)-'   '
+   / |   
+  '  '
+"@
 
 Write-Host "Starting the game..."
 
+Start-Sleep -Seconds 4
 
 
-# Start-Process -FilePath "$scriptDirectory\yo_cm_client.exe"
+Start-Process -FilePath "$scriptDirectory\yo_cm_client.exe"
 

@@ -195,6 +195,13 @@ Write-Host "Starting the game..."
 
 Start-Sleep -Seconds 4
 
+#Makes Life is Feudal load 9X9 maps
+$offset = 0x2E472
+[byte[]]$bytes = Get-Content yo_cm_client.exe -Encoding Byte -Raw
+$bytes[$offset] = 0x09
+
+,$bytes |Set-Content yo_cm_client.exe -Encoding Byte
+
 
 Start-Process -FilePath "$scriptDirectory\yo_cm_client.exe"
 
